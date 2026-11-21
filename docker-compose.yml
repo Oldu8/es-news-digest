@@ -1,0 +1,23 @@
+services:
+  digest:
+    build:
+      context: .
+      args:
+        CARGO_BUILD_JOBS: "1"
+    image: es-news-digest:latest
+    container_name: es-news-digest
+    command: ["serve"]
+    restart: unless-stopped
+    env_file: .env
+    volumes:
+      # Edit config.yaml on the host; it is re-read before every run.
+      - ./config.yaml:/app/config.yaml:ro
+      - ./data:/app/data
+      - ./logs:/app/logs
+    mem_limit: 128m
+    cpus: 0.5
+    logging:
+      driver: json-file
+      options:
+        max-size: "5m"
+        max-file: "3"
