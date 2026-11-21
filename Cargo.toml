@@ -1,0 +1,37 @@
+[package]
+name = "es-news-digest"
+version = "0.1.0"
+edition = "2024"
+description = "Daily Spanish news digest in Russian for a Telegram channel"
+publish = false
+
+[[bin]]
+name = "digest"
+path = "src/main.rs"
+
+[dependencies]
+anyhow = "1.0.104"
+chrono = { version = "0.4.45", default-features = false, features = ["std", "clock", "serde"] }
+chrono-tz = "0.10.4"
+clap = { version = "4.6.9", features = ["derive", "env"] }
+dotenvy = "0.15.7"
+futures = "0.3.34"
+quick-xml = "0.42.0"
+reqwest = { version = "0.13.5", default-features = false, features = ["rustls", "json", "gzip", "charset", "http2"] }
+rss = { version = "2.1.2", default-features = false }
+rusqlite = { version = "0.43.0", features = ["bundled"] }
+scraper = "0.29.0"
+serde = { version = "1.0.229", features = ["derive"] }
+serde-saphyr = "2.2.0"
+serde_json = "1.0.154"
+strsim = "0.11.1"
+thiserror = "2.0.21"
+tokio = { version = "1.54.1", features = ["macros", "rt-multi-thread", "time", "signal"] }
+tracing = "0.1.44"
+tracing-appender = "0.2.5"
+tracing-subscriber = { version = "0.3.23", features = ["env-filter", "fmt"] }
+url = "2.5.9"
+
+[profile.release]
+strip = true
+lto = "thin"

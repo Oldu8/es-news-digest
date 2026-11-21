@@ -1,0 +1,77 @@
+# es-news-digest configuration. Secrets live in .env, not here.
+
+schedule:
+  time: "08:40"            # local time of the daily run (digest serve)
+  timezone: Europe/Madrid
+
+window_hours: 24           # only articles published in the last N hours
+
+http:
+  timeout_secs: 20
+  user_agent: "es-news-digest/0.1 (personal news digest bot)"
+
+dedup:
+  title_similarity: 0.8    # 0..1, Sørensen–Dice on normalized titles
+  retention_days: 30       # how long sent URLs are remembered in SQLite
+
+gemini:
+  # Cheapest Flash model as of 2026-11. Deprecated by Google, shutdown 2027-05-07;
+  # the recommended replacement is gemini-3.5-flash-lite (a bit pricier).
+  model: gemini-3.1-flash-lite
+  base_url: https://generativelanguage.googleapis.com/v1beta
+  temperature: 0.2
+  max_candidates: 400      # newest N articles go to the prompt
+  timeout_secs: 120
+
+digest:
+  title: "🇪🇸 Испания: главное за {date}"
+  max_items: 7
+  min_importance: 2        # 1..5; items below are dropped
+  empty_text: "Сегодня ничего важного."
+  summary_max_chars: 280
+
+topics:
+  keep:
+    - "Налоги автономо (autónomo): cuota, IVA, IRPF, Hacienda, Seguridad Social, декларации и сроки"
+    - "Жильё: аренда и цены в Астурии, ипотека, Euríbor, земля, модульные дома, законы о жилье"
+    - "Астурия, Овьедо, Сьеро: транспорт, инфраструктура, важные для жителей события"
+    - "Документы для украинцев: protección temporal, NIE/TIE, cita previa, DGT и обмен прав (carnet de conducir)"
+    - "Экономика, которая бьёт по кошельку: электричество, газ, топливо, инфляция, цены, пенсии и зарплаты"
+  drop:
+    - "Политика без практических последствий для жителей"
+    - "Происшествия, криминал, аварии"
+    - "Спорт"
+    - "Светская хроника, культура и досуг"
+
+sources:
+  - kind: spanified
+    name: Spain Daily
+    url: https://spanified.com
+
+  - kind: sitemap
+    name: La Nueva España
+    url: https://www.lne.es/sitemapNews.xml
+    # first path segment of the article URL; see README for how to find more
+    sections: [asturias, oviedo, siero, centro, llanera, economia, gijon, aviles]
+
+  - kind: rss
+    name: El Comercio
+    urls:
+      - https://www.elcomercio.es/rss/2.0/?section=asturias
+      - https://www.elcomercio.es/rss/2.0/?section=ultima-hora
+
+  - kind: rss
+    name: elDiario.es
+    urls:
+      - https://www.eldiario.es/rss/economia/
+      - https://www.eldiario.es/rss/asturias/
+
+  - kind: rss
+    name: 20minutos
+    urls:
+      - https://www.20minutos.es/rss/economia/
+      - https://www.20minutos.es/rss/asturias/
+
+paths:
+  database: data/digest.sqlite
+  log_dir: logs
