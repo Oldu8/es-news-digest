@@ -1,3 +1,6 @@
+# Own compose project name, so it never collides with the other stacks on the shared VPS.
+name: es-news-digest
+
 services:
   digest:
     build:

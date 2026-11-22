@@ -40,6 +40,10 @@ daily-rotated files in `paths.log_dir` (14 kept). `RUST_LOG=debug` for more.
 - **systemd timer / cron:** build with `cargo build --release` and call
   `digest run` once a day, e.g. cron `40 8 * * * cd /opt/es-news-digest && ./digest run`
   with `CRON_TZ=Europe/Madrid`.
+- **Production (shared VPS):** a checkout in `/opt/es-news-digest` with `.env` next to
+  `docker-compose.yml`. `deploy/es-news-digest-autodeploy.timer` runs `deploy/autodeploy.sh`
+  every 2 minutes: when `origin/main` moved, it pulls and runs `docker compose up -d --build`.
+  So deploying is just `git push`.
 
 ## Changing topics and sources
 

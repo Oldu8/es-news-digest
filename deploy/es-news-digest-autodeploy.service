@@ -1,0 +1,7 @@
+[Unit]
+Description=es-news-digest: deploy new commits from origin/main
+After=docker.service network-online.target
+
+[Service]
+Type=oneshot
+ExecStart=/opt/es-news-digest/deploy/autodeploy.sh
