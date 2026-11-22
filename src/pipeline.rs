@@ -6,7 +6,7 @@ use std::time::Duration as StdDuration;
 use anyhow::{Context, Result, bail};
 use chrono::{DateTime, Duration, Utc};
 use futures::future::join_all;
-use tracing::{info, warn};
+use tracing::{debug, info, warn};
 
 use crate::article::Article;
 use crate::config::{Config, Secrets};
@@ -55,16 +55,31 @@ pub async fn collect(
     Ok(all)
 }
 
-/// Dedup, drop already-posted stories, keep the newest `max_candidates`.
-pub fn prepare(articles: Vec<Article>, cfg: &Config, sent: &[SentItem]) -> Vec<Article> {
+/// Drop articles whose URL date is older than the window (with a day of slack
+/// for time zones), dedup, drop already-posted stories, keep the newest
+/// `max_candidates`.
+pub fn prepare(
+    articles: Vec<Article>,
+    cfg: &Config,
+    sent: &[SentItem],
+    now: DateTime<Utc>,
+) -> Vec<Article> {
     let total = articles.len();
-    let mut items = dedup(articles, cfg.dedup.title_similarity);
+    let oldest = (now - Duration::hours(cfg.window_hours)).date_naive() - Duration::days(1);
+    let (fresh, stale): (Vec<_>, Vec<_>) = articles
+        .into_iter()
+        .partition(|a| sources::url_date(&a.url).is_none_or(|d| d >= oldest));
+    for a in &stale {
+        debug!(url = %a.url, "stale by URL date, skipping");
+    }
+    let mut items = dedup(fresh, cfg.dedup.title_similarity);
     let after_dedup = items.len();
     items.retain(|a| !Store::is_sent(sent, &a.url, &a.title, cfg.dedup.title_similarity));
     items.sort_by_key(|a| std::cmp::Reverse(a.published));
     items.truncate(cfg.gemini.max_candidates);
     info!(
         total,
+        stale = stale.len(),
         after_dedup,
         candidates = items.len(),
         "prepared candidates"
@@ -140,7 +155,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
 
     let http = http_client(cfg)?;
     let articles = collect(cfg, &http, now).await?;
-    let candidates = prepare(articles, cfg, &sent);
+    let candidates = prepare(articles, cfg, &sent, now);
 
     let entries = if candidates.is_empty() {
         info!("no candidates, skipping Gemini");

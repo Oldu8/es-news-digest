@@ -100,3 +100,73 @@ pub(crate) fn section_of(url: &str) -> Option<String> {
     let seg = parsed.path_segments()?.next()?;
     (!seg.is_empty()).then(|| seg.to_string())
 }
+
+/// Publication date encoded in an article URL, if any. Feeds sometimes bump
+/// `pubDate` when an old article is edited; the URL keeps the real date.
+/// Recognizes `/2026/11/21/`, `/2026-11-21/` and El Comercio's
+/// `-20261121192406-` (14-digit timestamp).
+pub fn url_date(url: &str) -> Option<chrono::NaiveDate> {
+    use chrono::NaiveDate;
+    let path = url::Url::parse(url).ok()?.path().to_string();
+    let segs: Vec<&str> = path.split('/').collect();
+
+    for w in segs.windows(3) {
+        if w[0].len() == 4
+            && w[1].len() == 2
+            && w[2].len() == 2
+            && let Ok(d) = NaiveDate::parse_from_str(&w.join("-"), "%Y-%m-%d")
+        {
+            return Some(d);
+        }
+    }
+    for seg in &segs {
+        if let Ok(d) = NaiveDate::parse_from_str(seg, "%Y-%m-%d") {
+            return Some(d);
+        }
+    }
+    for run in path.split(|c: char| !c.is_ascii_digit()) {
+        if run.len() == 14
+            && let Ok(d) = NaiveDate::parse_from_str(&run[..8], "%Y%m%d")
+        {
+            return Some(d);
+        }
+    }
+    None
+}
+
+#[cfg(test)]
+mod tests {
+    use super::url_date;
+    use chrono::NaiveDate;
+
+    fn d(y: i32, m: u32, day: u32) -> Option<NaiveDate> {
+        NaiveDate::from_ymd_opt(y, m, day)
+    }
+
+    #[test]
+    fn dates_from_urls() {
+        assert_eq!(
+            url_date(
+                "https://www.elcomercio.es/asturias/torre-control-asturias-santiago-20261002130129-nt.html"
+            ),
+            d(2026, 10, 2)
+        );
+        assert_eq!(
+            url_date("https://www.lne.es/oviedo/2026/11/21/arzobispo-136698009.html"),
+            d(2026, 11, 21)
+        );
+        assert_eq!(
+            url_date("https://elpais.com/economia/2026-11-20/transportes.html"),
+            d(2026, 11, 20)
+        );
+        // eldiario / 20minutos ids are not dates
+        assert_eq!(
+            url_date("https://www.eldiario.es/economia/sanchez_1_13682337.html"),
+            None
+        );
+        assert_eq!(
+            url_date("https://www.20minutos.es/a/ayuda-600-euros_7060753_0.html"),
+            None
+        );
+    }
+}

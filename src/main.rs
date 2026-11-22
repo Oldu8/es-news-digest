@@ -75,8 +75,9 @@ async fn main() -> Result<()> {
         Cmd::Serve => serve(cli.config, cfg, secrets).await?,
         Cmd::Collect => {
             let http = pipeline::http_client(&cfg)?;
-            let articles = pipeline::collect(&cfg, &http, Utc::now()).await?;
-            for a in pipeline::prepare(articles, &cfg, &[]) {
+            let now = Utc::now();
+            let articles = pipeline::collect(&cfg, &http, now).await?;
+            for a in pipeline::prepare(articles, &cfg, &[], now) {
                 println!(
                     "{} | {} | {} | {}\n    {}",
                     a.published.format("%m-%d %H:%M"),
