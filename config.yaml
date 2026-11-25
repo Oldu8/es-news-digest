@@ -3,6 +3,9 @@
 schedule:
   time: "08:40"            # local time of the daily run (digest serve)
   timezone: Europe/Madrid
+  retry:                   # digest serve: a failed run (e.g. Gemini 503) is repeated
+    attempts: 3            # 1 = no retries
+    delay_minutes: 5
 
 window_hours: 24           # only articles published in the last N hours
 
@@ -24,8 +27,19 @@ gemini:
   timeout_secs: 120
 
 digest:
-  title: "🇪🇸 Испания: главное за {date}"
-  max_items: 7
+  title: "🗞 Главное за {date}"
+  # Blocks of the message in display order. Gemini puts every story into one
+  # of them by `key`; `description` tells it what belongs where. An empty
+  # section is not shown.
+  sections:
+    - key: spain
+      title: "🇪🇸 Испания"
+      description: "новости всей Испании: законы, налоги, цены, документы, экономика страны"
+      max_items: 4
+    - key: asturias
+      title: "⛰️ Астурия"
+      description: "новости Астурии и её городов: Овьедо, Сьеро, Хихон, Авилес и др."
+      max_items: 4
   min_importance: 2        # 1..5; items below are dropped
   empty_text: "Сегодня ничего важного."
   summary_max_chars: 280

@@ -110,6 +110,7 @@ pub fn to_entries(items: Vec<LlmItem>, articles: &[Article]) -> Vec<Entry> {
                 return None;
             }
             Some(Entry {
+                section: it.section,
                 importance: it.importance,
                 title: it.title_ru,
                 summary: it.summary_ru,
@@ -117,6 +118,17 @@ pub fn to_entries(items: Vec<LlmItem>, articles: &[Article]) -> Vec<Entry> {
             })
         })
         .collect()
+}
+
+/// Marker in the error chain: the digest is already in the channel, so the run
+/// must not be retried (that would post it twice); only bookkeeping failed.
+#[derive(Debug)]
+pub struct AlreadyPosted;
+
+impl std::fmt::Display for AlreadyPosted {
+    fn fmt(&self, f: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        f.write_str("the digest was posted, but remembering the sent links failed")
+    }
 }
 
 /// Run the whole pipeline once. Returns the message text.
@@ -163,7 +175,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
     } else {
         let gemini = Gemini::new(cfg.gemini.clone(), gemini_key)?;
         let items = gemini
-            .select(&candidates, &cfg.topics, cfg.digest.max_items)
+            .select(&candidates, &cfg.topics, &cfg.digest.sections)
             .await
             .context("Gemini step failed")?;
         info!(items = items.len(), "Gemini selected");
@@ -184,11 +196,15 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
         info!(%channel, "digest posted");
         if let Some(store) = store.as_mut() {
             let links = rendered.shown.iter().flat_map(|e| e.links.iter());
-            let n = store.mark_sent(
-                links.map(|l| (l.url.as_str(), l.original_title.as_str())),
-                now,
-            )?;
-            let pruned = store.prune(now, cfg.dedup.retention_days)?;
+            let n = store
+                .mark_sent(
+                    links.map(|l| (l.url.as_str(), l.original_title.as_str())),
+                    now,
+                )
+                .context(AlreadyPosted)?;
+            let pruned = store
+                .prune(now, cfg.dedup.retention_days)
+                .context(AlreadyPosted)?;
             info!(remembered = n, pruned, "store updated");
         }
     }
@@ -218,6 +234,7 @@ mod tests {
         let items = vec![
             LlmItem {
                 ids: vec![0, 2, 1, 99],
+                section: "spain".into(),
                 topic: "t".into(),
                 importance: 4,
                 title_ru: "Т".into(),
@@ -225,6 +242,7 @@ mod tests {
             },
             LlmItem {
                 ids: vec![42],
+                section: "spain".into(),
                 topic: "t".into(),
                 importance: 5,
                 title_ru: "Призрак".into(),

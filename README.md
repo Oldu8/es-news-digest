@@ -54,7 +54,14 @@ each run):
 - `sources` — `kind: rss` (list of `urls`), `kind: sitemap` (`url` +
   `sections`, the first path segment of article URLs, e.g. `oviedo`),
   `kind: spanified`. Order matters: on duplicates the earlier source wins.
-- `gemini.model`, `digest.max_items`, `digest.min_importance`,
-  `dedup.title_similarity`, `schedule.time`/`timezone`.
+- `digest.sections` — blocks of the message (now Испания and Астурия): `key`,
+  heading, a `description` that tells Gemini what belongs there, `max_items`.
+- `schedule.retry` — a failed run (e.g. Gemini 503) is repeated `attempts`
+  times, `delay_minutes` apart; the admin is alerted after the last one.
+- `gemini.model`, `digest.min_importance`, `dedup.title_similarity`,
+  `schedule.time`/`timezone`.
+
+On the server, change `config.yaml` in the repo and push: autodeploy pulls it
+(an edit made on the server itself would block the next `git merge`).
 
 Tests run on saved pages in `tests/fixtures/`: `cargo test`.

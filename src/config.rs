@@ -31,6 +31,27 @@ pub struct ScheduleConfig {
     pub time: String,
     /// IANA time zone, e.g. "Europe/Madrid".
     pub timezone: String,
+    /// What `serve` does when a run fails (Gemini overloaded, network down…).
+    #[serde(default)]
+    pub retry: RetryConfig,
+}
+
+/// A failed run is repeated `attempts - 1` more times, `delay_minutes` apart;
+/// the admin is alerted only when the last attempt fails too.
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct RetryConfig {
+    pub attempts: u32,
+    pub delay_minutes: u64,
+}
+
+impl Default for RetryConfig {
+    fn default() -> Self {
+        Self {
+            attempts: 3,
+            delay_minutes: 5,
+        }
+    }
 }
 
 impl ScheduleConfig {
@@ -81,12 +102,32 @@ pub struct GeminiConfig {
 pub struct DigestConfig {
     /// Heading; `{date}` is replaced with e.g. "21 ноября".
     pub title: String,
-    pub max_items: usize,
+    /// Blocks of the message, in display order. The model puts every story
+    /// into one of them by `key`.
+    pub sections: Vec<SectionConfig>,
     /// Items below this importance (1–5) are not shown.
     pub min_importance: u8,
     pub empty_text: String,
     /// Per-item summary cap in characters.
     pub summary_max_chars: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct SectionConfig {
+    /// Stable id the model answers with, e.g. `spain`.
+    pub key: String,
+    /// Heading shown in the message, e.g. "🇪🇸 Испания".
+    pub title: String,
+    /// For the model: which stories belong here.
+    pub description: String,
+    pub max_items: usize,
+}
+
+impl DigestConfig {
+    pub fn total_max_items(&self) -> usize {
+        self.sections.iter().map(|s| s.max_items).sum()
+    }
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -142,6 +183,18 @@ impl Config {
         cfg.schedule.tz()?;
         if !(0.0..=1.0).contains(&cfg.dedup.title_similarity) {
             bail!("dedup.title_similarity must be within 0..1");
+        }
+        if cfg.schedule.retry.attempts == 0 {
+            bail!("schedule.retry.attempts must be at least 1");
+        }
+        if cfg.digest.sections.is_empty() {
+            bail!("digest.sections must list at least one section");
+        }
+        let mut keys = std::collections::HashSet::new();
+        for sec in &cfg.digest.sections {
+            if !keys.insert(sec.key.as_str()) {
+                bail!("digest.sections: duplicate key {:?}", sec.key);
+            }
         }
         if cfg.sources.is_empty() {
             bail!("no sources configured");

@@ -165,11 +165,49 @@ async fn serve(path: PathBuf, mut cfg: Config, secrets: Secrets) -> Result<()> {
                 .await;
             }
         }
-        if let Err(e) = pipeline::run(&cfg, &secrets, false).await {
-            error!("run failed: {e:#}");
-            alert_admin(&secrets, &format!("прогон упал:\n{e:#}")).await;
+        if !run_with_retries(&cfg, &secrets).await {
+            return Ok(());
         }
     }
+}
+
+/// One scheduled run with `schedule.retry`: a failed attempt is repeated after
+/// a pause (Gemini 503 "high demand" usually passes in minutes). The admin is
+/// alerted only when the last attempt fails, or right away if the digest was
+/// already posted (a retry would post it twice). Returns false on shutdown.
+async fn run_with_retries(cfg: &Config, secrets: &Secrets) -> bool {
+    let retry = &cfg.schedule.retry;
+    for attempt in 1..=retry.attempts {
+        let e = match pipeline::run(cfg, secrets, false).await {
+            Ok(_) => return true,
+            Err(e) => e,
+        };
+        let last =
+            attempt == retry.attempts || e.downcast_ref::<pipeline::AlreadyPosted>().is_some();
+        if last {
+            error!(attempt, "run failed: {e:#}");
+            let tries = if attempt > 1 {
+                format!(" (попыток: {attempt})")
+            } else {
+                String::new()
+            };
+            alert_admin(secrets, &format!("прогон упал{tries}:\n{e:#}")).await;
+            return true;
+        }
+        warn!(
+            attempt,
+            retry_in_min = retry.delay_minutes,
+            "run failed, will retry: {e:#}"
+        );
+        tokio::select! {
+            _ = tokio::time::sleep(std::time::Duration::from_secs(retry.delay_minutes * 60)) => {}
+            _ = shutdown_signal() => {
+                info!("shutdown signal received");
+                return false;
+            }
+        }
+    }
+    true
 }
 
 async fn shutdown_signal() {
