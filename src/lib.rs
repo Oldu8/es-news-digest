@@ -7,6 +7,7 @@ pub mod article;
 pub mod config;
 pub mod dedup;
 pub mod gemini;
+pub mod openai;
 pub mod pipeline;
 pub mod render;
 pub mod schedule;

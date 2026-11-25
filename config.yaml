@@ -26,6 +26,14 @@ gemini:
   max_candidates: 400      # newest N articles go to the prompt
   timeout_secs: 120
 
+# Fallback when Gemini fails (503 "high demand", outage): the same prompt goes
+# to OpenAI right away. Needs OPENAI_API_KEY in .env; delete this block to
+# disable.
+openai:
+  model: gpt-5.4-mini
+  reasoning_effort: low
+  timeout_secs: 120
+
 digest:
   title: "🗞 Главное за {date}"
   # Blocks of the message in display order. Gemini puts every story into one

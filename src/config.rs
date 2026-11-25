@@ -18,6 +18,9 @@ pub struct Config {
     pub http: HttpConfig,
     pub dedup: DedupConfig,
     pub gemini: GeminiConfig,
+    /// Fallback model when Gemini fails; absent = no fallback.
+    #[serde(default)]
+    pub openai: Option<OpenAiConfig>,
     pub digest: DigestConfig,
     pub topics: TopicsConfig,
     pub sources: Vec<SourceConfig>,
@@ -110,6 +113,22 @@ pub struct DigestConfig {
     pub empty_text: String,
     /// Per-item summary cap in characters.
     pub summary_max_chars: usize,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct OpenAiConfig {
+    pub model: String,
+    #[serde(default = "default_openai_base")]
+    pub base_url: String,
+    /// For reasoning models: minimal / low / medium / high.
+    #[serde(default)]
+    pub reasoning_effort: Option<String>,
+    pub timeout_secs: u64,
+}
+
+fn default_openai_base() -> String {
+    "https://api.openai.com/v1".into()
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -207,6 +226,8 @@ impl Config {
 #[derive(Clone)]
 pub struct Secrets {
     pub gemini_api_key: Option<String>,
+    /// Only needed for the OpenAI fallback.
+    pub openai_api_key: Option<String>,
     pub telegram_bot_token: Option<String>,
     pub telegram_channel_id: Option<String>,
     pub telegram_admin_chat_id: Option<String>,
@@ -217,6 +238,7 @@ impl Secrets {
         let get = |k: &str| std::env::var(k).ok().filter(|v| !v.trim().is_empty());
         Self {
             gemini_api_key: get("GEMINI_API_KEY"),
+            openai_api_key: get("OPENAI_API_KEY"),
             telegram_bot_token: get("TELEGRAM_BOT_TOKEN"),
             telegram_channel_id: get("TELEGRAM_CHANNEL_ID"),
             telegram_admin_chat_id: get("TELEGRAM_ADMIN_CHAT_ID"),
@@ -230,6 +252,7 @@ impl std::fmt::Debug for Secrets {
         let set = |o: &Option<String>| if o.is_some() { "set" } else { "missing" };
         f.debug_struct("Secrets")
             .field("gemini_api_key", &set(&self.gemini_api_key))
+            .field("openai_api_key", &set(&self.openai_api_key))
             .field("telegram_bot_token", &set(&self.telegram_bot_token))
             .field("telegram_channel_id", &set(&self.telegram_channel_id))
             .field("telegram_admin_chat_id", &set(&self.telegram_admin_chat_id))

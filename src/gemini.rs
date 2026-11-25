@@ -32,13 +32,28 @@ struct LlmOutput {
     items: Vec<LlmItem>,
 }
 
+/// Parse the model's JSON (`{"items": [...]}`) and clamp importance to 1..=5.
+/// Shared with the OpenAI fallback, which answers in the same shape.
+pub fn parse_items(json: &str) -> serde_json::Result<Vec<LlmItem>> {
+    let out: LlmOutput = serde_json::from_str(json)?;
+    Ok(out
+        .items
+        .into_iter()
+        .map(|mut it| {
+            it.importance = it.importance.clamp(1, 5);
+            it
+        })
+        .collect())
+}
+
 pub struct Gemini {
     http: reqwest::Client,
     cfg: GeminiConfig,
     api_key: String,
 }
 
-const SYSTEM: &str = "Ты редактор ежедневной сводки испанских новостей для русскоязычного \
+/// System prompt shared by all providers.
+pub const SYSTEM: &str = "Ты редактор ежедневной сводки испанских новостей для русскоязычного \
 жителя Астурии (живёт около Овьедо/Сьеро), который работает autónomo и является \
 украинцем с protección temporal. Тебе дают список новостей за последние сутки на испанском \
 или английском. Твоя задача: выбрать только то, что практически важно этому читателю, \
@@ -216,20 +231,12 @@ pub fn parse_response(raw: &str) -> Result<Vec<LlmItem>> {
     if text.trim().is_empty() {
         bail!("Gemini returned an empty answer (finishReason: {finish})");
     }
-    let out: LlmOutput = serde_json::from_str(&text).with_context(|| {
+    parse_items(&text).with_context(|| {
         format!(
             "Gemini JSON does not match the schema (finishReason: {finish}): {}",
             truncate_chars(&text, 200)
         )
-    })?;
-    Ok(out
-        .items
-        .into_iter()
-        .map(|mut it| {
-            it.importance = it.importance.clamp(1, 5);
-            it
-        })
-        .collect())
+    })
 }
 
 #[cfg(test)]

@@ -12,6 +12,7 @@ use crate::article::Article;
 use crate::config::{Config, Secrets};
 use crate::dedup::{dedup, normalize_url};
 use crate::gemini::{Gemini, LlmItem};
+use crate::openai::OpenAi;
 use crate::render::{Entry, Link, render};
 use crate::sources;
 use crate::store::{SentItem, Store};
@@ -120,6 +121,31 @@ pub fn to_entries(items: Vec<LlmItem>, articles: &[Article]) -> Vec<Entry> {
         .collect()
 }
 
+/// Ask Gemini; if it fails and the OpenAI fallback is configured, ask OpenAI
+/// with the same prompt right away, so the digest still goes out on time.
+async fn select_items(
+    cfg: &Config,
+    secrets: &Secrets,
+    gemini_key: String,
+    candidates: &[Article],
+) -> Result<Vec<LlmItem>> {
+    let sections = &cfg.digest.sections;
+    let gemini = Gemini::new(cfg.gemini.clone(), gemini_key)?;
+    let gemini_err = match gemini.select(candidates, &cfg.topics, sections).await {
+        Ok(items) => return Ok(items),
+        Err(e) => e.context("Gemini step failed"),
+    };
+    let (Some(oc), Some(key)) = (&cfg.openai, &secrets.openai_api_key) else {
+        return Err(gemini_err);
+    };
+    warn!("{gemini_err:#}; falling back to OpenAI");
+    let openai = OpenAi::new(oc.clone(), key.clone())?;
+    openai
+        .select(candidates, &cfg.topics, sections)
+        .await
+        .with_context(|| format!("OpenAI fallback failed too ({gemini_err:#})"))
+}
+
 /// Marker in the error chain: the digest is already in the channel, so the run
 /// must not be retried (that would post it twice); only bookkeeping failed.
 #[derive(Debug)]
@@ -173,11 +199,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
         info!("no candidates, skipping Gemini");
         Vec::new()
     } else {
-        let gemini = Gemini::new(cfg.gemini.clone(), gemini_key)?;
-        let items = gemini
-            .select(&candidates, &cfg.topics, &cfg.digest.sections)
-            .await
-            .context("Gemini step failed")?;
+        let items = select_items(cfg, secrets, gemini_key, &candidates).await?;
         info!(items = items.len(), "Gemini selected");
         to_entries(items, &candidates)
     };
