@@ -200,7 +200,7 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
         Vec::new()
     } else {
         let items = select_items(cfg, secrets, gemini_key, &candidates).await?;
-        info!(items = items.len(), "Gemini selected");
+        info!(items = items.len(), "model selected");
         to_entries(items, &candidates)
     };
 
