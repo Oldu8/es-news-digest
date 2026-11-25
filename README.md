@@ -55,7 +55,9 @@ each run):
   `sections`, the first path segment of article URLs, e.g. `oviedo`),
   `kind: spanified`. Order matters: on duplicates the earlier source wins.
 - `digest.sections` — blocks of the message (now Испания and Астурия): `key`,
-  heading, a `description` that tells Gemini what belongs there, `max_items`.
+  heading, a `description` that tells Gemini what belongs there, `max_items`
+  (a safety cap). The length is dynamic: every item with importance >=
+  `digest.min_importance` is shown, so quiet days give a short digest.
 - `schedule.retry` — a failed run (e.g. Gemini 503) is repeated `attempts`
   times, `delay_minutes` apart; the admin is alerted after the last one.
 - `gemini.model`, `digest.min_importance`, `dedup.title_similarity`,

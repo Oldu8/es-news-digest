@@ -29,18 +29,20 @@ gemini:
 digest:
   title: "🗞 Главное за {date}"
   # Blocks of the message in display order. Gemini puts every story into one
-  # of them by `key`; `description` tells it what belongs where. An empty
-  # section is not shown.
+  # of them by `key`; `description` tells it what belongs where. How many items
+  # a section gets depends on the day: everything with importance >=
+  # min_importance is shown, so a quiet day is short and a busy one is long.
+  # max_items is only a safety cap; an empty section is not shown.
   sections:
     - key: spain
       title: "🇪🇸 Испания"
       description: "новости всей Испании: законы, налоги, цены, документы, экономика страны"
-      max_items: 4
+      max_items: 8
     - key: asturias
       title: "⛰️ Астурия"
       description: "новости Астурии и её городов: Овьедо, Сьеро, Хихон, Авилес и др."
-      max_items: 4
-  min_importance: 2        # 1..5; items below are dropped
+      max_items: 8
+  min_importance: 3        # 1..5; items below are dropped (3 = useful to know)
   empty_text: "Сегодня ничего важного."
   summary_max_chars: 280
 
