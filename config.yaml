@@ -1,7 +1,7 @@
 # es-news-digest configuration. Secrets live in .env, not here.
 
 schedule:
-  time: "08:40"            # local time of the daily run (digest serve)
+  times: ["09:00", "18:00"] # local times of the runs (digest serve)
   timezone: Europe/Madrid
   retry:                   # digest serve: a failed run (e.g. Gemini 503) is repeated
     attempts: 3            # 1 = no retries
@@ -35,24 +35,25 @@ openai:
   timeout_secs: 120
 
 digest:
-  title: "🗞 Главное за {date}"
+  title: "🗞 {period}: главное за {date}"   # {period} = Утро before 14:00, else Вечер
   # Blocks of the message in display order. Gemini puts every story into one
   # of them by `key`; `description` tells it what belongs where. How many items
   # a section gets depends on the day: everything with importance >=
-  # min_importance is shown, so a quiet day is short and a busy one is long.
-  # max_items is only a safety cap; an empty section is not shown.
+  # min_importance is shown, so a quiet day is short and a busy one is long; a
+  # long digest continues in another message. max_items is only a safety cap;
+  # an empty section is not shown.
   sections:
     - key: spain
       title: "🇪🇸 Испания"
       description: "новости всей Испании: законы, налоги, цены, документы, экономика страны"
-      max_items: 8
+      max_items: 20
     - key: asturias
       title: "⛰️ Астурия"
       description: "новости Астурии и её городов: Овьедо, Сьеро, Хихон, Авилес и др."
-      max_items: 8
-  min_importance: 3        # 1..5; items below are dropped (3 = useful to know)
+      max_items: 20
+  min_importance: 2        # 1..5; items below are dropped (2 = on topic, background)
   empty_text: "Сегодня ничего важного."
-  summary_max_chars: 280
+  summary_max_chars: 600   # safety cut; the prompt asks for 2–4 sentences
 
 topics:
   keep:

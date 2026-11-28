@@ -1,6 +1,6 @@
 //! Telegram HTML rendering of the digest.
 
-use chrono::{Datelike, NaiveDate};
+use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 
 use crate::config::DigestConfig;
 
@@ -106,25 +106,37 @@ fn render_entry(e: &Entry, summary_max: usize) -> String {
     s
 }
 
-/// The rendered message and the entries that made it in (in display order).
+/// The digest as one or more Telegram messages, and the entries in them (in
+/// display order).
 #[derive(Debug)]
 pub struct Rendered<'a> {
-    pub text: String,
+    pub messages: Vec<String>,
     pub shown: Vec<&'a Entry>,
 }
 
-/// Pick, order and format the entries into one message that fits Telegram.
+/// "Утро" before 14:00 local time, "Вечер" after: for `{period}` in the title.
+pub fn period(when: NaiveDateTime) -> &'static str {
+    if when.hour() < 14 {
+        "Утро"
+    } else {
+        "Вечер"
+    }
+}
+
+/// Pick, order and format the entries.
 ///
 /// Entries below `min_importance` are dropped, the rest are grouped into the
 /// configured sections (in config order), sorted by importance inside each
 /// (stable, so the model's order breaks ties) and capped at the section's
-/// `max_items`. Empty sections are not shown. While the text is too long, the
-/// least important last entry of some section is dropped.
-pub fn render<'a>(entries: &'a [Entry], date: NaiveDate, cfg: &DigestConfig) -> Rendered<'a> {
-    let header = format!(
-        "<b>{}</b>",
-        escape(&cfg.title.replace("{date}", &ru_date(date)))
-    );
+/// `max_items`. Empty sections are not shown. Nothing is dropped for length:
+/// when the text does not fit one Telegram message, it continues in the next
+/// one, split between entries, with the section heading repeated.
+pub fn render<'a>(entries: &'a [Entry], when: NaiveDateTime, cfg: &DigestConfig) -> Rendered<'a> {
+    let title = cfg
+        .title
+        .replace("{date}", &ru_date(when.date()))
+        .replace("{period}", period(when));
+    let header = format!("<b>{}</b>", escape(&title));
 
     let mut groups: Vec<Vec<&Entry>> = vec![Vec::new(); cfg.sections.len()];
     for e in entries
@@ -142,55 +154,41 @@ pub fn render<'a>(entries: &'a [Entry], date: NaiveDate, cfg: &DigestConfig) -> 
         group.sort_by_key(|e| std::cmp::Reverse(e.importance));
         group.truncate(sec.max_items);
     }
-
-    let shown = |groups: &[Vec<&'a Entry>]| groups.iter().flatten().copied().collect::<Vec<_>>();
-    if groups.iter().all(Vec::is_empty) {
+    let shown: Vec<&Entry> = groups.iter().flatten().copied().collect();
+    if shown.is_empty() {
         return Rendered {
-            text: format!("{header}\n\n{}", escape(&cfg.empty_text)),
-            shown: Vec::new(),
+            messages: vec![format!("{header}\n\n{}", escape(&cfg.empty_text))],
+            shown,
         };
     }
 
-    let mut summary_max = cfg.summary_max_chars;
-    loop {
-        let mut text = header.clone();
-        for (group, sec) in groups.iter().zip(&cfg.sections) {
-            if group.is_empty() {
+    let mut messages = Vec::new();
+    let mut current = header;
+    for (group, sec) in groups.iter().zip(&cfg.sections) {
+        let heading = format!("<b>{}</b>", escape(&sec.title));
+        for (j, e) in group.iter().enumerate() {
+            let entry = render_entry(e, cfg.summary_max_chars);
+            // A section heading never ends a message on its own.
+            let block = if j == 0 {
+                format!("{heading}\n\n{entry}")
+            } else {
+                entry.clone()
+            };
+            let candidate = format!("{current}\n\n{block}");
+            if tg_len(&candidate) <= TELEGRAM_LIMIT {
+                current = candidate;
                 continue;
             }
-            text.push_str(&format!("\n\n<b>{}</b>", escape(&sec.title)));
-            for e in group {
-                text.push_str("\n\n");
-                text.push_str(&render_entry(e, summary_max));
+            messages.push(std::mem::take(&mut current));
+            current = format!("{heading}\n\n{entry}");
+            if tg_len(&current) > TELEGRAM_LIMIT {
+                // One entry over 4096 visible chars: unrealistic, hard cut.
+                current = current.chars().take(TELEGRAM_LIMIT / 2).collect();
             }
         }
-        if tg_len(&text) <= TELEGRAM_LIMIT {
-            return Rendered {
-                text,
-                shown: shown(&groups),
-            };
-        }
-        let total: usize = groups.iter().map(Vec::len).sum();
-        if total > 1 {
-            // The weakest tail; on a tie, the biggest section gives one up.
-            let victim = groups
-                .iter()
-                .enumerate()
-                .filter_map(|(i, g)| g.last().map(|e| (i, e.importance, g.len())))
-                .min_by_key(|&(_, imp, len)| (imp, std::cmp::Reverse(len)))
-                .map(|(i, _, _)| i)
-                .expect("total > 1 means some group is non-empty");
-            groups[victim].pop();
-        } else if summary_max > 40 {
-            summary_max /= 2;
-        } else {
-            // One giant title: hard cut, tags may break, but it is unrealistic.
-            return Rendered {
-                text: text.chars().take(TELEGRAM_LIMIT / 2).collect(),
-                shown: shown(&groups),
-            };
-        }
     }
+    messages.push(current);
+    Rendered { messages, shown }
 }
 
 #[cfg(test)]
@@ -209,11 +207,11 @@ mod tests {
 
     fn cfg() -> DigestConfig {
         DigestConfig {
-            title: "Главное за {date}".into(),
+            title: "{period}: главное за {date}".into(),
             sections: vec![section("spain", "Испания", 7)],
             min_importance: 2,
             empty_text: "Сегодня ничего важного.".into(),
-            summary_max_chars: 280,
+            summary_max_chars: 600,
         }
     }
 
@@ -231,8 +229,16 @@ mod tests {
         }
     }
 
-    fn date() -> NaiveDate {
-        NaiveDate::from_ymd_opt(2026, 11, 21).unwrap()
+    fn morning() -> NaiveDateTime {
+        NaiveDate::from_ymd_opt(2026, 11, 21)
+            .unwrap()
+            .and_hms_opt(9, 0, 0)
+            .unwrap()
+    }
+
+    fn one(r: Rendered) -> String {
+        assert_eq!(r.messages.len(), 1);
+        r.messages.into_iter().next().unwrap()
     }
 
     #[test]
@@ -245,18 +251,17 @@ mod tests {
 
     #[test]
     fn renders_sorted_with_red_marker_first() {
-        let text = render(
+        let text = one(render(
             &[
                 entry(3, "Третья"),
                 entry(5, "IVA <важно>"),
                 entry(1, "Мусор"),
                 entry(4, "Четвёртая"),
             ],
-            date(),
+            morning(),
             &cfg(),
-        )
-        .text;
-        let expected = "<b>Главное за 21 ноября</b>\n\n<b>Испания</b>\n\n\
+        ));
+        let expected = "<b>Утро: главное за 21 ноября</b>\n\n<b>Испания</b>\n\n\
             🔴 <b>IVA &lt;важно&gt;</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>\n\n\
             ▪️ <b>Четвёртая</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>\n\n\
             ▪️ <b>Третья</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>";
@@ -264,31 +269,52 @@ mod tests {
     }
 
     #[test]
-    fn empty_digest() {
+    fn evening_title_and_empty_digest() {
+        let evening = morning().date().and_hms_opt(18, 0, 0).unwrap();
         assert_eq!(
-            render(&[entry(1, "x")], date(), &cfg()).text,
-            "<b>Главное за 21 ноября</b>\n\nСегодня ничего важного."
+            one(render(&[entry(1, "x")], evening, &cfg())),
+            "<b>Вечер: главное за 21 ноября</b>\n\nСегодня ничего важного."
         );
     }
 
     #[test]
-    fn caps_items_and_fits_telegram_limit() {
+    fn long_digest_splits_into_messages_without_dropping() {
         let mut c = cfg();
-        c.sections[0].max_items = 50;
-        c.summary_max_chars = 1000;
-        let long = Entry {
-            summary: "слово ".repeat(150),
-            ..entry(3, "Длинная")
+        c.sections = vec![
+            section("spain", "Испания", 50),
+            section("asturias", "Астурия", 50),
+        ];
+        let long = |sec: &str, t: &str| Entry {
+            section: sec.into(),
+            summary: "слово ".repeat(90),
+            ..entry(3, t)
         };
-        let entries = vec![long; 20];
-        let text = render(&entries, date(), &c).text;
-        assert!(tg_len(&text) <= TELEGRAM_LIMIT);
-        assert!(text.matches("<b>Длинная</b>").count() >= 2);
+        let mut entries: Vec<Entry> = (0..12).map(|i| long("spain", &format!("И{i}"))).collect();
+        entries.extend((0..12).map(|i| long("asturias", &format!("А{i}"))));
+        let r = render(&entries, morning(), &c);
+        assert_eq!(r.shown.len(), 24, "nothing dropped");
+        assert!(r.messages.len() >= 2);
+        for m in &r.messages {
+            assert!(tg_len(m) <= TELEGRAM_LIMIT);
+            // every message starts with a heading, never ends with one
+            assert!(m.starts_with("<b>"));
+            assert!(!m.ends_with("</b>"));
+        }
+        let all = r.messages.join("\n");
+        for i in 0..12 {
+            assert!(all.contains(&format!("<b>И{i}</b>")) && all.contains(&format!("<b>А{i}</b>")));
+        }
+        assert!(r.messages[0].starts_with("<b>Утро: главное"));
+    }
 
-        let r = render(&entries, date(), &cfg());
-        assert_eq!(r.shown.len(), 7);
-        let text = r.text;
-        assert!(text.matches("<b>Длинная</b>").count() <= 7);
+    #[test]
+    fn caps_per_section() {
+        let mut c = cfg();
+        c.sections[0].max_items = 2;
+        let entries = [entry(3, "a"), entry(4, "b"), entry(5, "c")];
+        let r = render(&entries, morning(), &c);
+        let titles: Vec<&str> = r.shown.iter().map(|e| e.title.as_str()).collect();
+        assert_eq!(titles, ["c", "b"]);
     }
 
     #[test]
@@ -299,7 +325,7 @@ mod tests {
             url: "https://lne.es/b".into(),
             original_title: "b".into(),
         });
-        let text = render(&[e], date(), &cfg()).text;
+        let text = one(render(&[e], morning(), &cfg()));
         assert!(text.ends_with("El Comercio</a> · <a href=\"https://lne.es/b\">LNE</a>"));
     }
 
@@ -325,23 +351,24 @@ mod tests {
                 ..entry(5, "Неизвестный раздел")
             },
         ];
-        let r = render(&entries, date(), &c);
+        let r = render(&entries, morning(), &c);
         let titles: Vec<&str> = r.shown.iter().map(|e| e.title.as_str()).collect();
         // unknown section goes to the first one; each section capped at 2
         assert_eq!(
             titles,
             ["Неизвестный раздел", "Мадрид-4", "Сьеро", "Овьедо"]
         );
-        let spain = r.text.find("🇪🇸 Испания").unwrap();
-        let asturias = r.text.find("<b>Астурия</b>").unwrap();
-        assert!(spain < asturias && r.text.find("Сьеро").unwrap() > asturias);
+        let text = one(r);
+        let spain = text.find("🇪🇸 Испания").unwrap();
+        let asturias = text.find("<b>Астурия</b>").unwrap();
+        assert!(spain < asturias && text.find("Сьеро").unwrap() > asturias);
     }
 
     #[test]
     fn empty_section_is_hidden() {
         let mut c = cfg();
         c.sections.push(section("asturias", "Астурия", 3));
-        let text = render(&[entry(4, "Мадрид")], date(), &c).text;
+        let text = one(render(&[entry(4, "Мадрид")], morning(), &c));
         assert!(text.contains("<b>Испания</b>"));
         assert!(!text.contains("Астурия"));
     }

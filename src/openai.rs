@@ -40,7 +40,7 @@ pub fn response_schema(sections: &[SectionConfig]) -> Value {
                         "topic": {"type": "string", "description": "к какой теме из списка относится"},
                         "importance": {"type": "integer", "description": "1..5"},
                         "title_ru": {"type": "string", "description": "заголовок по-русски, до 90 символов"},
-                        "summary_ru": {"type": "string", "description": "суть в 1–2 предложениях по-русски, до 250 символов"}
+                        "summary_ru": {"type": "string", "description": "суть в 2–4 предложениях по-русски, до 500 символов"}
                     }
                 }
             }

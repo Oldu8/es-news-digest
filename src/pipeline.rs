@@ -204,18 +204,37 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
         to_entries(items, &candidates)
     };
 
-    let rendered = render(&entries, now.with_timezone(&tz).date_naive(), &cfg.digest);
+    let rendered = render(&entries, now.with_timezone(&tz).naive_local(), &cfg.digest);
     info!(
         shown = rendered.shown.len(),
-        chars = rendered.text.chars().count(),
+        messages = rendered.messages.len(),
+        chars = rendered
+            .messages
+            .iter()
+            .map(|m| m.chars().count())
+            .sum::<usize>(),
         "rendered digest"
     );
 
     if let Some((tg, channel)) = tg {
-        tg.send(&channel, &rendered.text, true)
-            .await
-            .context("posting the digest to the channel")?;
-        info!(%channel, "digest posted");
+        // Once the first message is out, a failure must not trigger a retry
+        // (that would repeat the beginning): remember what was sent and stop.
+        let mut send_err = None;
+        for (i, msg) in rendered.messages.iter().enumerate() {
+            if let Err(e) = tg.send(&channel, msg, true).await {
+                let e = e.context(format!(
+                    "posting message {} of {} to the channel",
+                    i + 1,
+                    rendered.messages.len()
+                ));
+                if i == 0 {
+                    return Err(e);
+                }
+                send_err = Some(e.context(AlreadyPosted));
+                break;
+            }
+        }
+        info!(%channel, partial = send_err.is_some(), "digest posted");
         if let Some(store) = store.as_mut() {
             let links = rendered.shown.iter().flat_map(|e| e.links.iter());
             let n = store
@@ -229,8 +248,13 @@ pub async fn run(cfg: &Config, secrets: &Secrets, dry_run: bool) -> Result<Strin
                 .context(AlreadyPosted)?;
             info!(remembered = n, pruned, "store updated");
         }
+        if let Some(e) = send_err {
+            return Err(e);
+        }
     }
-    Ok(rendered.text)
+    Ok(rendered
+        .messages
+        .join("\n\n———— следующее сообщение ————\n\n"))
 }
 
 #[cfg(test)]

@@ -27,7 +27,7 @@ the channel (the bot is an admin there), then open
 
 - `digest run` — one run: collect, summarize, post, remember.
 - `digest run --dry-run` — print to stdout only.
-- `digest serve` — stay alive and run daily at `schedule.time`.
+- `digest serve` — stay alive and run daily at `schedule.times` (09:00 and 18:00).
 - `digest collect` — debug: list deduplicated candidates without the LLM.
 
 `--config path` (or `DIGEST_CONFIG`) picks another config. Logs: stderr plus
@@ -61,7 +61,7 @@ each run):
 - `schedule.retry` — a failed run (e.g. Gemini 503) is repeated `attempts`
   times, `delay_minutes` apart; the admin is alerted after the last one.
 - `gemini.model`, `digest.min_importance`, `dedup.title_similarity`,
-  `schedule.time`/`timezone`.
+  `schedule.times`/`timezone`.
 
 On the server, change `config.yaml` in the repo and push: autodeploy pulls it
 (an edit made on the server itself would block the next `git merge`).

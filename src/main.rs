@@ -142,7 +142,14 @@ async fn alert_admin(secrets: &Secrets, msg: &str) {
 /// before every run, so edits to config.yaml apply without a restart.
 async fn serve(path: PathBuf, mut cfg: Config, secrets: Secrets) -> Result<()> {
     loop {
-        let next = schedule::next_run(Utc::now(), cfg.schedule.time()?, cfg.schedule.tz()?);
+        let (now, tz) = (Utc::now(), cfg.schedule.tz()?);
+        let next = cfg
+            .schedule
+            .times()?
+            .into_iter()
+            .map(|t| schedule::next_run(now, t, tz))
+            .min()
+            .expect("times() is never empty");
         info!(next_run = %next.with_timezone(&cfg.schedule.tz()?), "waiting");
         let wait = (next - Utc::now()).to_std().unwrap_or_default();
 

@@ -78,7 +78,7 @@ pub fn parse_rss(xml: &str, source: &str) -> SourceResult<Vec<Article>> {
                 .description()
                 .map(strip_html)
                 .filter(|s| !s.is_empty())
-                .map(|s| truncate_chars(&s, 400));
+                .map(|s| truncate_chars(&s, 800));
             // Feed category if present, otherwise the URL's first path segment
             // (El Comercio: /gijon/, /deportes/, …), which helps the LLM filter.
             let section = item

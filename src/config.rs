@@ -30,8 +30,8 @@ pub struct Config {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct ScheduleConfig {
-    /// Local time of the daily run, "HH:MM".
-    pub time: String,
+    /// Local times of the daily runs, "HH:MM" (e.g. morning and evening).
+    pub times: Vec<String>,
     /// IANA time zone, e.g. "Europe/Madrid".
     pub timezone: String,
     /// What `serve` does when a run fails (Gemini overloaded, network down…).
@@ -58,9 +58,17 @@ impl Default for RetryConfig {
 }
 
 impl ScheduleConfig {
-    pub fn time(&self) -> Result<NaiveTime> {
-        NaiveTime::parse_from_str(&self.time, "%H:%M")
-            .with_context(|| format!("schedule.time must be HH:MM, got {:?}", self.time))
+    pub fn times(&self) -> Result<Vec<NaiveTime>> {
+        if self.times.is_empty() {
+            bail!("schedule.times must list at least one HH:MM");
+        }
+        self.times
+            .iter()
+            .map(|t| {
+                NaiveTime::parse_from_str(t, "%H:%M")
+                    .with_context(|| format!("schedule.times: expected HH:MM, got {t:?}"))
+            })
+            .collect()
     }
 
     pub fn tz(&self) -> Result<Tz> {
@@ -198,7 +206,7 @@ impl Config {
 
     pub fn parse(raw: &str) -> Result<Self> {
         let cfg: Config = serde_saphyr::from_str(raw)?;
-        cfg.schedule.time()?;
+        cfg.schedule.times()?;
         cfg.schedule.tz()?;
         if !(0.0..=1.0).contains(&cfg.dedup.title_similarity) {
             bail!("dedup.title_similarity must be within 0..1");
