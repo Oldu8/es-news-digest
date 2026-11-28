@@ -2,7 +2,7 @@
 
 use chrono::{Datelike, NaiveDate, NaiveDateTime, Timelike};
 
-use crate::config::DigestConfig;
+use crate::config::{DigestConfig, Lang};
 
 /// Telegram's limit for one message: 4096 characters of the text *after*
 /// entity parsing, i.e. without tags and link URLs. Measured in UTF-16 code
@@ -17,11 +17,16 @@ pub struct Link {
     pub original_title: String,
 }
 
-/// A finished digest entry: Russian text plus links to the originals.
+/// A finished digest entry: text in the digest language plus links to the
+/// originals.
 #[derive(Debug, Clone, PartialEq)]
 pub struct Entry {
     /// Key of the digest section; unknown keys land in the first section.
     pub section: String,
+    /// Keys from `topics.catalog` (for per-reader filtering later).
+    pub topics: Vec<String>,
+    /// Hashtag (without `#`) of the main topic, shown before the headline.
+    pub tag: Option<String>,
     pub importance: u8,
     pub title: String,
     pub summary: String,
@@ -44,7 +49,22 @@ pub fn escape(s: &str) -> String {
     out
 }
 
-const MONTHS: [&str; 12] = [
+const MONTHS_UK: [&str; 12] = [
+    "січня",
+    "лютого",
+    "березня",
+    "квітня",
+    "травня",
+    "червня",
+    "липня",
+    "серпня",
+    "вересня",
+    "жовтня",
+    "листопада",
+    "грудня",
+];
+
+const MONTHS_RU: [&str; 12] = [
     "января",
     "февраля",
     "марта",
@@ -59,8 +79,13 @@ const MONTHS: [&str; 12] = [
     "декабря",
 ];
 
-pub fn ru_date(d: NaiveDate) -> String {
-    format!("{} {}", d.day(), MONTHS[d.month0() as usize])
+/// "21 листопада" / "21 ноября".
+pub fn local_date(d: NaiveDate, lang: Lang) -> String {
+    let months = match lang {
+        Lang::Uk => &MONTHS_UK,
+        Lang::Ru => &MONTHS_RU,
+    };
+    format!("{} {}", d.day(), months[d.month0() as usize])
 }
 
 /// Length of the message as Telegram counts it: tags (with their `href`s)
@@ -94,7 +119,12 @@ fn render_entry(e: &Entry, summary_max: usize) -> String {
         .collect::<Vec<_>>()
         .join(" · ");
     let summary = crate::text::truncate_chars(e.summary.trim(), summary_max);
-    let mut s = format!("{marker} <b>{}</b>", escape(e.title.trim()));
+    let tag = e
+        .tag
+        .as_deref()
+        .map(|t| format!("#{} ", escape(t)))
+        .unwrap_or_default();
+    let mut s = format!("{marker} {tag}<b>{}</b>", escape(e.title.trim()));
     if !summary.is_empty() {
         s.push('\n');
         s.push_str(&escape(&summary));
@@ -114,12 +144,14 @@ pub struct Rendered<'a> {
     pub shown: Vec<&'a Entry>,
 }
 
-/// "Утро" before 14:00 local time, "Вечер" after: for `{period}` in the title.
-pub fn period(when: NaiveDateTime) -> &'static str {
-    if when.hour() < 14 {
-        "Утро"
-    } else {
-        "Вечер"
+/// Morning word before 14:00 local time, evening word after: for `{period}`
+/// in the title.
+pub fn period(when: NaiveDateTime, lang: Lang) -> &'static str {
+    match (when.hour() < 14, lang) {
+        (true, Lang::Uk) => "Ранок",
+        (false, Lang::Uk) => "Вечір",
+        (true, Lang::Ru) => "Утро",
+        (false, Lang::Ru) => "Вечер",
     }
 }
 
@@ -134,8 +166,8 @@ pub fn period(when: NaiveDateTime) -> &'static str {
 pub fn render<'a>(entries: &'a [Entry], when: NaiveDateTime, cfg: &DigestConfig) -> Rendered<'a> {
     let title = cfg
         .title
-        .replace("{date}", &ru_date(when.date()))
-        .replace("{period}", period(when));
+        .replace("{date}", &local_date(when.date(), cfg.language))
+        .replace("{period}", period(when, cfg.language));
     let header = format!("<b>{}</b>", escape(&title));
 
     let mut groups: Vec<Vec<&Entry>> = vec![Vec::new(); cfg.sections.len()];
@@ -207,10 +239,11 @@ mod tests {
 
     fn cfg() -> DigestConfig {
         DigestConfig {
-            title: "{period}: главное за {date}".into(),
-            sections: vec![section("spain", "Испания", 7)],
+            language: Lang::Uk,
+            title: "{period}: головне за {date}".into(),
+            sections: vec![section("spain", "Іспанія", 7)],
             min_importance: 2,
-            empty_text: "Сегодня ничего важного.".into(),
+            empty_text: "Сьогодні нічого важливого.".into(),
             summary_max_chars: 600,
         }
     }
@@ -218,6 +251,8 @@ mod tests {
     fn entry(importance: u8, title: &str) -> Entry {
         Entry {
             section: "spain".into(),
+            topics: vec!["prices".into()],
+            tag: None,
             importance,
             title: title.into(),
             summary: "Суть новости.".into(),
@@ -261,7 +296,7 @@ mod tests {
             morning(),
             &cfg(),
         ));
-        let expected = "<b>Утро: главное за 21 ноября</b>\n\n<b>Испания</b>\n\n\
+        let expected = "<b>Ранок: головне за 21 листопада</b>\n\n<b>Іспанія</b>\n\n\
             🔴 <b>IVA &lt;важно&gt;</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>\n\n\
             ▪️ <b>Четвёртая</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>\n\n\
             ▪️ <b>Третья</b>\nСуть новости.\n<a href=\"https://x.es/a?b=1&amp;c=2\">El Comercio</a>";
@@ -273,8 +308,17 @@ mod tests {
         let evening = morning().date().and_hms_opt(18, 0, 0).unwrap();
         assert_eq!(
             one(render(&[entry(1, "x")], evening, &cfg())),
-            "<b>Вечер: главное за 21 ноября</b>\n\nСегодня ничего важного."
+            "<b>Вечір: головне за 21 листопада</b>\n\nСьогодні нічого важливого."
         );
+    }
+
+    #[test]
+    fn russian_date_and_period() {
+        let mut c = cfg();
+        c.language = Lang::Ru;
+        c.title = "{period}: главное за {date}".into();
+        let text = one(render(&[], morning(), &c));
+        assert!(text.starts_with("<b>Утро: главное за 21 ноября</b>"));
     }
 
     #[test]
@@ -304,7 +348,7 @@ mod tests {
         for i in 0..12 {
             assert!(all.contains(&format!("<b>И{i}</b>")) && all.contains(&format!("<b>А{i}</b>")));
         }
-        assert!(r.messages[0].starts_with("<b>Утро: главное"));
+        assert!(r.messages[0].starts_with("<b>Ранок: головне"));
     }
 
     #[test]
@@ -315,6 +359,14 @@ mod tests {
         let r = render(&entries, morning(), &c);
         let titles: Vec<&str> = r.shown.iter().map(|e| e.title.as_str()).collect();
         assert_eq!(titles, ["c", "b"]);
+    }
+
+    #[test]
+    fn hashtag_before_title() {
+        let mut e = entry(5, "Світло дешевшає");
+        e.tag = Some("ціни".into());
+        let text = one(render(&[e], morning(), &cfg()));
+        assert!(text.contains("\n\n🔴 #ціни <b>Світло дешевшає</b>\n"));
     }
 
     #[test]
@@ -369,7 +421,7 @@ mod tests {
         let mut c = cfg();
         c.sections.push(section("asturias", "Астурия", 3));
         let text = one(render(&[entry(4, "Мадрид")], morning(), &c));
-        assert!(text.contains("<b>Испания</b>"));
+        assert!(text.contains("<b>Іспанія</b>"));
         assert!(!text.contains("Астурия"));
     }
 

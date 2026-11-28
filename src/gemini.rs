@@ -10,7 +10,7 @@ use serde_json::{Value, json};
 use tracing::{debug, info};
 
 use crate::article::Article;
-use crate::config::{GeminiConfig, SectionConfig, TopicsConfig};
+use crate::config::{GeminiConfig, Lang, SectionConfig, TopicsConfig};
 use crate::text::truncate_chars;
 
 /// One digest entry as returned by the model.
@@ -20,11 +20,17 @@ pub struct LlmItem {
     pub ids: Vec<usize>,
     /// Key of the digest section (`digest.sections[].key`).
     pub section: String,
-    pub topic: String,
+    /// Keys from `topics.catalog`, most relevant first.
+    pub topics: Vec<String>,
     /// 1 (marginal) … 5 (must know today).
     pub importance: u8,
-    pub title_ru: String,
-    pub summary_ru: String,
+    /// Headline in the digest language.
+    pub title: String,
+    /// Summary in the digest language.
+    pub summary: String,
+    /// Index in the ALREADY PUBLISHED list if this is the same story with
+    /// nothing really new, else -1. Such items are dropped in code.
+    pub repeat_of: i64,
 }
 
 #[derive(Debug, Deserialize)]
@@ -53,17 +59,26 @@ pub struct Gemini {
 }
 
 /// System prompt shared by all providers.
-pub const SYSTEM: &str = "Ты редактор ежедневной сводки испанских новостей для русскоязычного \
-жителя Астурии (живёт около Овьедо/Сьеро), который работает autónomo и является \
-украинцем с protección temporal. Тебе дают список новостей за последние сутки на испанском \
-или английском. Твоя задача: выбрать только то, что практически важно этому читателю, \
-объединить дубли и пересказать по-русски коротко и точно, без воды и оценок. \
-Не выдумывай факты, которых нет в заголовке или лиде. Числа, даты, суммы и проценты сохраняй.";
+pub fn system_prompt(lang: Lang) -> String {
+    format!(
+        "You are the editor of a daily digest of Spanish news for Ukrainians living in Spain: \
+         people with temporary protection or other residence status, working as employees or \
+         autónomos, renting a home, often with children at school. You get the news of the \
+         last day in Spanish or English. Pick only what is practically useful to these readers, \
+         merge duplicates and retell each story in {lang}, briefly and precisely, without filler \
+         or opinions. Do not invent facts that are not in the headline or the lead. Keep numbers, \
+         dates, amounts and percentages.",
+        lang = lang.prompt_name()
+    )
+}
 
 /// JSON schema for `generationConfig.responseSchema` (OpenAPI subset).
-/// `section` is an enum of the configured keys, so the model cannot invent one.
-pub fn response_schema(sections: &[SectionConfig]) -> Value {
+/// `section` and `topics` are enums of the configured keys, so the model
+/// cannot invent one.
+pub fn response_schema(sections: &[SectionConfig], topics: &TopicsConfig, lang: Lang) -> Value {
     let keys: Vec<&str> = sections.iter().map(|s| s.key.as_str()).collect();
+    let topic_keys: Vec<&str> = topics.catalog.iter().map(|t| t.key.as_str()).collect();
+    let lang = lang.prompt_name();
     json!({
         "type": "OBJECT",
         "properties": {
@@ -73,16 +88,19 @@ pub fn response_schema(sections: &[SectionConfig]) -> Value {
                     "type": "OBJECT",
                     "properties": {
                         "ids": {"type": "ARRAY", "items": {"type": "INTEGER"},
-                                "description": "id всех входных новостей об этом сюжете"},
+                                "description": "ids of all input articles about this story"},
                         "section": {"type": "STRING", "format": "enum", "enum": keys,
-                                    "description": "раздел сводки"},
-                        "topic": {"type": "STRING", "description": "к какой теме из списка относится"},
+                                    "description": "digest section"},
+                        "topics": {"type": "ARRAY",
+                                   "items": {"type": "STRING", "format": "enum", "enum": topic_keys},
+                                   "description": "1-3 topic keys, most relevant first"},
                         "importance": {"type": "INTEGER", "minimum": 1, "maximum": 5},
-                        "title_ru": {"type": "STRING", "description": "заголовок по-русски, до 90 символов"},
-                        "summary_ru": {"type": "STRING", "description": "суть в 2–4 предложениях по-русски, до 500 символов"}
+                        "title": {"type": "STRING", "description": format!("headline in {lang}, up to 90 characters")},
+                        "summary": {"type": "STRING", "description": format!("the gist in 2-4 sentences in {lang}, up to 500 characters")},
+                        "repeat_of": {"type": "INTEGER", "description": "number in ALREADY PUBLISHED if this story was already published with nothing new, else -1"}
                     },
-                    "required": ["ids", "section", "topic", "importance", "title_ru", "summary_ru"],
-                    "propertyOrdering": ["ids", "section", "topic", "importance", "title_ru", "summary_ru"]
+                    "required": ["ids", "section", "topics", "importance", "title", "summary", "repeat_of"],
+                    "propertyOrdering": ["ids", "repeat_of", "section", "topics", "importance", "title", "summary"]
                 }
             }
         },
@@ -95,40 +113,61 @@ pub fn build_prompt(
     articles: &[Article],
     topics: &TopicsConfig,
     sections: &[SectionConfig],
+    lang: Lang,
+    published: &[String],
 ) -> String {
     let mut p = String::new();
-    p.push_str("ОСТАВЛЯЕМ только темы:\n");
-    for t in &topics.keep {
-        p.push_str(&format!("- {t}\n"));
+    p.push_str("TOPICS we cover (field `topics`), keep only stories that fit one of them:\n");
+    for t in &topics.catalog {
+        p.push_str(&format!("- {}: {}\n", t.key, t.description));
     }
-    p.push_str("\nОТБРАСЫВАЕМ:\n");
+    p.push_str("\nDROP:\n");
     for t in &topics.drop {
         p.push_str(&format!("- {t}\n"));
     }
-    p.push_str("\nРАЗДЕЛЫ (поле `section`):\n");
+    p.push_str("\nSECTIONS (field `section`):\n");
     for sec in sections {
         p.push_str(&format!("- {}: {}\n", sec.key, sec.description));
     }
+    if !published.is_empty() {
+        p.push_str(
+            "\nALREADY PUBLISHED in the last digests (number | headline). For every item set \
+             `repeat_of`: the number of the published headline about the same story (also from \
+             another source or with other wording) when the articles bring nothing really new; \
+             -1 when the story is new or has a real new development (a decision taken, new \
+             figures, a new date; then say in the title what is new):\n",
+        );
+        for (i, t) in published.iter().enumerate() {
+            p.push_str(&format!("{i} | {t}\n"));
+        }
+    }
     let max_items: usize = sections.iter().map(|s| s.max_items).sum();
     p.push_str(&format!(
-        "\nПравила:\n\
-         - Если несколько новостей про один и тот же сюжет (в том числе из разных источников \
-           или на разных языках), верни ОДИН пункт и перечисли все их id в `ids`.\n\
-         - importance: 5 — касается денег/документов/жилья читателя напрямую и срочно \
-           (новый налог, срок подачи, изменение правил для украинцев, резкий рост цен); \
-           4 — заметно влияет; 3 — полезно знать; 2 — фон; 1 — почти не важно.\n\
-         - Новость про другие регионы Испании оставляй, только если она касается всей страны.\n\
-         - Каждый пункт отнеси ровно к одному разделу. Новость из Астурии с последствиями \
-           для всей страны — в общий раздел.\n\
-         - Верни ВСЕ новости, которые относятся к темам из списка ОСТАВЛЯЕМ, даже если \
-           они не срочные (им importance 2–3). Не отбрасывай новости ради краткости: \
-           количество зависит только от дня. Пустой список — только если по темам \
-           действительно ничего нет. Максимум {} пунктов.\n\
-         - summary_ru: 2–4 предложения, до 500 символов. Передай главное и все практические \
-           детали из лида: кого касается, суммы, проценты, даты и сроки, что нужно сделать.\n\
-         - Пиши по-русски, испанские термины (IVA, IRPF, NIE, TIE, cuota) оставляй как есть.\n\n\
-         НОВОСТИ (id | источник | раздел | заголовок | лид):\n",
-        max_items * 2
+        "\nRules:\n\
+         - If several articles cover the same story (also from different sources or in \
+           different languages), return ONE item and list all their ids in `ids`. One item \
+           = one event. Never merge different events into one item, even when they share a \
+           town or a topic (measles and an egg recall are two items; inflation and the stock \
+           market are two items). A title must name one concrete event; a generic title like \
+           \"News of Asturias\" or \"Infrastructure news\" means you merged events, split them.\n\
+         - topics: 1-3 keys from TOPICS, most relevant first.\n\
+         - importance: 5 = directly and urgently affects the readers' money, documents or \
+           housing (a new tax, a deadline, a rule change for Ukrainians, a sharp price rise); \
+           4 = noticeable effect; 3 = useful to know; 2 = background; 1 = hardly matters.\n\
+         - Keep news about other regions of Spain only if it concerns the whole country.\n\
+         - Put every item into exactly one section. News from Asturias with consequences for \
+           the whole country goes to the general section.\n\
+         - Return ALL stories that fit TOPICS, even non-urgent ones (importance 2-3). Do not \
+           drop stories for brevity: the count depends only on the day. Return an empty list \
+           only if nothing fits. At most {} items.\n\
+         - summary: 2-4 sentences, up to 500 characters. Give the main point and every practical \
+           detail from the lead: who is affected, amounts, percentages, dates and deadlines, \
+           what to do.\n\
+         - Write `title` and `summary` in {}. Keep Spanish terms and abbreviations as they \
+           are, in Latin letters (IVA, IRPF, IPC, NIE, TIE, SEPE, DGT, cuota, cita previa).\n\n\
+         NEWS (id | source | section | headline | lead):\n",
+        max_items * 2,
+        lang.prompt_name()
     ));
     for (i, a) in articles.iter().enumerate() {
         let summary = a
@@ -160,17 +199,19 @@ impl Gemini {
         articles: &[Article],
         topics: &TopicsConfig,
         sections: &[SectionConfig],
+        lang: Lang,
+        published: &[String],
     ) -> Result<Vec<LlmItem>> {
-        let prompt = build_prompt(articles, topics, sections);
+        let prompt = build_prompt(articles, topics, sections, lang, published);
         let mut generation = json!({
             "responseMimeType": "application/json",
-            "responseSchema": response_schema(sections),
+            "responseSchema": response_schema(sections, topics, lang),
         });
         if let Some(t) = self.cfg.temperature {
             generation["temperature"] = json!(t);
         }
         let body = json!({
-            "systemInstruction": {"parts": [{"text": SYSTEM}]},
+            "systemInstruction": {"parts": [{"text": system_prompt(lang)}]},
             "contents": [{"role": "user", "parts": [{"text": prompt}]}],
             "generationConfig": generation,
         });
@@ -245,13 +286,14 @@ pub fn parse_response(raw: &str) -> Result<Vec<LlmItem>> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::config::TopicConfig;
     use chrono::Utc;
 
     #[test]
     fn parses_structured_answer() {
         let raw = r#"{
           "candidates": [{
-            "content": {"parts": [{"text": "{\"items\":[{\"ids\":[0,3],\"section\":\"spain\",\"topic\":\"налоги\",\"importance\":7,\"title_ru\":\"Т\",\"summary_ru\":\"С\"}]}"}]},
+            "content": {"parts": [{"text": "{\"items\":[{\"ids\":[0,3],\"section\":\"spain\",\"topics\":[\"taxes\"],\"importance\":7,\"title\":\"Т\",\"summary\":\"С\",\"repeat_of\":-1}]}"}]},
             "finishReason": "STOP"
           }],
           "usageMetadata": {"promptTokenCount": 100, "candidatesTokenCount": 20}
@@ -261,6 +303,7 @@ mod tests {
         assert_eq!(items[0].ids, [0, 3]);
         assert_eq!(items[0].section, "spain");
         assert_eq!(items[0].importance, 5, "clamped");
+        assert_eq!(items[0].topics, ["taxes"]);
     }
 
     #[test]
@@ -280,8 +323,13 @@ mod tests {
             section: Some("asturias".into()),
         };
         let topics = TopicsConfig {
-            keep: vec!["налоги".into()],
-            drop: vec!["спорт".into()],
+            catalog: vec![TopicConfig {
+                key: "taxes".into(),
+                title: "Податки".into(),
+                tag: "податки".into(),
+                description: "autónomos and taxes".into(),
+            }],
+            drop: vec!["sport".into()],
         };
         let sections = vec![SectionConfig {
             key: "asturias".into(),
@@ -289,13 +337,23 @@ mod tests {
             description: "новости Астурии".into(),
             max_items: 3,
         }];
-        let p = build_prompt(&[a.clone(), a], &topics, &sections);
+        let p = build_prompt(&[a.clone(), a], &topics, &sections, Lang::Uk, &[]);
+        assert!(!p.contains("ALREADY PUBLISHED"));
+        let with_memory =
+            build_prompt(&[], &topics, &sections, Lang::Uk, &["Інфляція 4,1%".into()]);
+        assert!(with_memory.contains("ALREADY PUBLISHED"));
+        assert!(with_memory.contains("\n0 | Інфляція 4,1%\n"));
         assert!(p.contains("- asturias: новости Астурии"));
-        assert!(p.contains("Максимум 6 пунктов"));
+        assert!(p.contains("- taxes: autónomos and taxes"));
+        assert!(p.contains("At most 6 items"));
+        assert!(p.contains("in Ukrainian"));
         assert!(p.contains(
             "0 | El Comercio | asturias | Sube la cuota de autónomos | A partir de enero"
         ));
         assert!(p.contains("\n1 | El Comercio"));
-        assert!(p.contains("- спорт"));
+        assert!(p.contains("- sport"));
+        let schema = response_schema(&sections, &topics, Lang::Uk);
+        let item = &schema["properties"]["items"]["items"]["properties"];
+        assert_eq!(item["topics"]["items"]["enum"], json!(["taxes"]));
     }
 }

@@ -16,6 +16,7 @@ http:
 dedup:
   title_similarity: 0.8    # 0..1, Sørensen–Dice on normalized titles
   retention_days: 30       # how long sent URLs are remembered in SQLite
+  story_memory_hours: 48   # headlines of the last N hours go to the model: no retelling
 
 gemini:
   # Cheapest Flash model as of 2026-11. Deprecated by Google, shutdown 2027-05-07;
@@ -35,7 +36,8 @@ openai:
   timeout_secs: 120
 
 digest:
-  title: "🗞 {period}: главное за {date}"   # {period} = Утро before 14:00, else Вечер
+  language: uk             # uk | ru: what the model writes in, month and period words
+  title: "🗞 {period}: головне за {date}"   # {period} = Ранок before 14:00, else Вечір
   # Blocks of the message in display order. Gemini puts every story into one
   # of them by `key`; `description` tells it what belongs where. How many items
   # a section gets depends on the day: everything with importance >=
@@ -44,29 +46,89 @@ digest:
   # an empty section is not shown.
   sections:
     - key: spain
-      title: "🇪🇸 Испания"
-      description: "новости всей Испании: законы, налоги, цены, документы, экономика страны"
+      title: "🇪🇸 Іспанія"
+      description: "news for all of Spain: laws, taxes, prices, documents, the national economy"
       max_items: 20
     - key: asturias
-      title: "⛰️ Астурия"
-      description: "новости Астурии и её городов: Овьедо, Сьеро, Хихон, Авилес и др."
+      title: "⛰️ Астурія"
+      description: "news of Asturias and its towns: Oviedo, Siero, Gijón, Avilés etc."
       max_items: 20
+    - key: bonus
+      title: "✨ Наостанок — хороше"
+      description: "EXACTLY 1-2 light, pleasant stories from anywhere in Spain or Asturias, \
+        an exception to DROP: Christmas lights switched on, a fiesta or celebration, an \
+        anniversary, a local achievement, a kind or curious story. Topic `good`, importance 2. \
+        Not politics, crime or disasters. Return them every day if there is anything at all"
+      max_items: 2
   min_importance: 2        # 1..5; items below are dropped (2 = on topic, background)
-  empty_text: "Сегодня ничего важного."
+  empty_text: "Сьогодні нічого важливого."
   summary_max_chars: 600   # safety cut; the prompt asks for 2–4 sentences
 
+# Who reads the digest is described in the prompt (src/gemini.rs, SYSTEM).
+# catalog: the topics we cover. Every story gets 1–3 of these keys; the bot
+# will let readers pick from this list, so keep keys stable once users exist.
+# `title` is shown to readers, `tag` is the hashtag before each headline (the
+# first topic's), `description` tells the model what belongs there.
 topics:
-  keep:
-    - "Налоги автономо (autónomo): cuota, IVA, IRPF, Hacienda, Seguridad Social, декларации и сроки"
-    - "Жильё: аренда и цены в Астурии, ипотека, Euríbor, земля, модульные дома, законы о жилье"
-    - "Астурия, Овьедо, Сьеро: транспорт, инфраструктура, важные для жителей события"
-    - "Документы для украинцев: protección temporal, NIE/TIE, cita previa, DGT и обмен прав (carnet de conducir)"
-    - "Экономика, которая бьёт по кошельку: электричество, газ, топливо, инфляция, цены, пенсии и зарплаты"
+  catalog:
+    - key: documents
+      title: "📄 Документи й легалізація"
+      tag: документи
+      description: "protección temporal and its extensions, NIE/TIE, cita previa, residence and work permits, arraigo, nationality, empadronamiento, the Ukrainian consulate"
+    - key: driving
+      title: "🚗 Водійські права, DGT"
+      tag: водіям
+      description: "DGT, exchange or validity of Ukrainian driving licences, carnet de conducir, ITV, traffic rules, fines"
+    - key: work
+      title: "💼 Робота й зарплати"
+      tag: робота
+      description: "labour market, contracts, SMI (minimum wage), SEPE and unemployment benefits, job programmes, labour law changes"
+    - key: taxes
+      title: "🧾 Податки й автономо"
+      tag: податки
+      description: "autónomos (cuota, tarifa plana, IVA, IRPF), declaración de la renta, Hacienda, Seguridad Social, deadlines"
+    - key: housing
+      title: "🏠 Житло"
+      tag: житло
+      description: "renting and rent prices, buying, mortgages and Euríbor, housing laws and aid, land, modular homes"
+    - key: prices
+      title: "💶 Ціни й комуналка"
+      tag: ціни
+      description: "electricity, gas, fuel, food prices, inflation, bank fees, anything that hits the wallet"
+    - key: benefits
+      title: "🤝 Допомоги й пенсії"
+      tag: допомоги
+      description: "Ingreso Mínimo Vital, bono social, child and family benefits, ayudas, pensions"
+    - key: education
+      title: "🎓 Освіта й діти"
+      tag: освіта
+      description: "schools and kindergartens, enrolment, school calendar, grants and becas, homologation of diplomas, Spanish courses"
+    - key: health
+      title: "🩺 Медицина"
+      tag: медицина
+      description: "tarjeta sanitaria, public healthcare, waiting lists, vaccination, pharmacies, health alerts"
+    - key: transport
+      title: "🚆 Транспорт і страйки"
+      tag: транспорт
+      description: "Renfe, buses, public transport passes and discounts, strikes, road works and closures"
+    - key: ukrainians
+      title: "🇺🇦 Українці в Іспанії"
+      tag: українці
+      description: "news about Ukrainians in Spain: Spanish decisions on Ukrainian refugees, help programmes, community events, consular news"
+    - key: calendar
+      title: "📅 Свята й графіки"
+      tag: свята
+      description: "public holidays (festivos), opening hours, time change, weather alerts that change plans"
+    - key: good
+      title: "✨ Хороші новини"
+      tag: хороше
+      description: "light and pleasant stories for the bonus section: Christmas lights, fiestas and celebrations, anniversaries, local achievements, kind or curious stories"
   drop:
-    - "Политика без практических последствий для жителей"
-    - "Происшествия, криминал, аварии"
-    - "Спорт"
-    - "Светская хроника, культура и досуг"
+    - "Politics with no practical consequences for residents (campaigns, party fights, polls)"
+    - "International politics and the war, unless there are direct consequences for Ukrainians in Spain"
+    - "Crime, accidents, incidents"
+    - "Sport"
+    - "Celebrities, culture and leisure (except public holidays and schedules, and the 1-2 stories of the bonus section)"
 
 sources:
   - kind: spanified
@@ -90,12 +152,27 @@ sources:
     urls:
       - https://www.eldiario.es/rss/economia/
       - https://www.eldiario.es/rss/asturias/
+      - https://www.eldiario.es/rss/sociedad/
 
   - kind: rss
     name: 20minutos
     urls:
       - https://www.20minutos.es/rss/economia/
       - https://www.20minutos.es/rss/asturias/
+      - https://www.20minutos.es/rss/vivienda/
+      - https://www.20minutos.es/rss/salud/
+
+  - kind: rss
+    name: El País
+    urls:
+      - https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/economia/portada
+      - https://feeds.elpais.com/mrss-s/pages/ep/site/elpais.com/section/sociedad/portada
+
+  - kind: rss
+    name: Europa Press
+    urls:
+      - https://www.europapress.es/rss/rss.aspx?ch=00136   # economía
+      - https://www.europapress.es/rss/rss.aspx?ch=00073   # sociedad
 
 paths:
   database: data/digest.sqlite

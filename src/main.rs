@@ -17,7 +17,7 @@ use es_news_digest::{pipeline, schedule, telegram::Telegram, text::truncate_char
 #[command(
     name = "digest",
     version,
-    about = "Daily Spanish news digest in Russian for Telegram"
+    about = "Daily Spanish news digest for Telegram"
 )]
 struct Cli {
     /// Path to config.yaml

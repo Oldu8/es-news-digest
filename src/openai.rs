@@ -9,8 +9,8 @@ use serde_json::{Value, json};
 use tracing::info;
 
 use crate::article::Article;
-use crate::config::{OpenAiConfig, SectionConfig, TopicsConfig};
-use crate::gemini::{LlmItem, SYSTEM, build_prompt, parse_items};
+use crate::config::{Lang, OpenAiConfig, SectionConfig, TopicsConfig};
+use crate::gemini::{LlmItem, build_prompt, parse_items, system_prompt};
 use crate::text::truncate_chars;
 
 pub struct OpenAi {
@@ -20,8 +20,10 @@ pub struct OpenAi {
 }
 
 /// Standard JSON Schema in strict mode: every property required, no extras.
-pub fn response_schema(sections: &[SectionConfig]) -> Value {
+pub fn response_schema(sections: &[SectionConfig], topics: &TopicsConfig, lang: Lang) -> Value {
     let keys: Vec<&str> = sections.iter().map(|s| s.key.as_str()).collect();
+    let topic_keys: Vec<&str> = topics.catalog.iter().map(|t| t.key.as_str()).collect();
+    let lang = lang.prompt_name();
     json!({
         "type": "object",
         "additionalProperties": false,
@@ -32,15 +34,17 @@ pub fn response_schema(sections: &[SectionConfig]) -> Value {
                 "items": {
                     "type": "object",
                     "additionalProperties": false,
-                    "required": ["ids", "section", "topic", "importance", "title_ru", "summary_ru"],
+                    "required": ["ids", "section", "topics", "importance", "title", "summary", "repeat_of"],
                     "properties": {
                         "ids": {"type": "array", "items": {"type": "integer"},
-                                "description": "id всех входных новостей об этом сюжете"},
-                        "section": {"type": "string", "enum": keys, "description": "раздел сводки"},
-                        "topic": {"type": "string", "description": "к какой теме из списка относится"},
+                                "description": "ids of all input articles about this story"},
+                        "section": {"type": "string", "enum": keys, "description": "digest section"},
+                        "topics": {"type": "array", "items": {"type": "string", "enum": topic_keys},
+                                   "description": "1-3 topic keys, most relevant first"},
                         "importance": {"type": "integer", "description": "1..5"},
-                        "title_ru": {"type": "string", "description": "заголовок по-русски, до 90 символов"},
-                        "summary_ru": {"type": "string", "description": "суть в 2–4 предложениях по-русски, до 500 символов"}
+                        "title": {"type": "string", "description": format!("headline in {lang}, up to 90 characters")},
+                        "summary": {"type": "string", "description": format!("the gist in 2-4 sentences in {lang}, up to 500 characters")},
+                        "repeat_of": {"type": "integer", "description": "number in ALREADY PUBLISHED if this story was already published with nothing new, else -1"}
                     }
                 }
             }
@@ -61,17 +65,19 @@ impl OpenAi {
         articles: &[Article],
         topics: &TopicsConfig,
         sections: &[SectionConfig],
+        lang: Lang,
+        published: &[String],
     ) -> Result<Vec<LlmItem>> {
-        let prompt = build_prompt(articles, topics, sections);
+        let prompt = build_prompt(articles, topics, sections, lang, published);
         let mut body = json!({
             "model": self.cfg.model,
             "messages": [
-                {"role": "system", "content": SYSTEM},
+                {"role": "system", "content": system_prompt(lang)},
                 {"role": "user", "content": prompt},
             ],
             "response_format": {
                 "type": "json_schema",
-                "json_schema": {"name": "digest", "strict": true, "schema": response_schema(sections)},
+                "json_schema": {"name": "digest", "strict": true, "schema": response_schema(sections, topics, lang)},
             },
         });
         if let Some(effort) = &self.cfg.reasoning_effort {
@@ -141,7 +147,7 @@ mod tests {
         let raw = r#"{
           "choices": [{
             "message": {"role": "assistant", "refusal": null,
-              "content": "{\"items\":[{\"ids\":[2],\"section\":\"asturias\",\"topic\":\"t\",\"importance\":0,\"title_ru\":\"Т\",\"summary_ru\":\"С\"}]}"},
+              "content": "{\"items\":[{\"ids\":[2],\"section\":\"asturias\",\"topics\":[\"housing\"],\"importance\":0,\"title\":\"Т\",\"summary\":\"С\",\"repeat_of\":-1}]}"},
             "finish_reason": "stop"
           }],
           "usage": {"prompt_tokens": 100, "completion_tokens": 20}
@@ -167,17 +173,30 @@ mod tests {
     }
 
     #[test]
-    fn schema_is_strict_with_section_enum() {
+    fn schema_is_strict_with_key_enums() {
         let sections = vec![SectionConfig {
             key: "spain".into(),
             title: "Испания".into(),
             description: String::new(),
             max_items: 5,
         }];
-        let s = response_schema(&sections);
+        let topics = TopicsConfig {
+            catalog: vec![crate::config::TopicConfig {
+                key: "housing".into(),
+                title: "Житло".into(),
+                tag: "житло".into(),
+                description: String::new(),
+            }],
+            drop: vec![],
+        };
+        let s = response_schema(&sections, &topics, Lang::Uk);
         let item = &s["properties"]["items"]["items"];
         assert_eq!(item["additionalProperties"], json!(false));
         assert_eq!(item["properties"]["section"]["enum"], json!(["spain"]));
+        assert_eq!(
+            item["properties"]["topics"]["items"]["enum"],
+            json!(["housing"])
+        );
         assert_eq!(
             item["required"].as_array().unwrap().len(),
             item["properties"].as_object().unwrap().len()

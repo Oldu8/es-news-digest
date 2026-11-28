@@ -1,14 +1,17 @@
 # es-news-digest
 
-Daily digest of Spanish news (Asturias, autónomo taxes, housing, documents for
-Ukrainians, prices) in Russian, posted to a Telegram channel at 08:40
-Europe/Madrid. Written in Rust.
+Daily digest of Spanish news for Ukrainians in Spain (documents, work, taxes,
+housing, prices, benefits, schools, health, transport, Asturias) in Ukrainian
+(or Russian, `digest.language`), posted to a Telegram channel twice a day.
+Written in Rust.
 
 **How it works:** sources (`src/sources/`: Spanified HTML, RSS, Google News
 sitemap) are fetched concurrently → last 24 h only → dedup by normalized URL and
 similar titles, minus anything already posted (SQLite, 30 days) → one Gemini
-call with a JSON `responseSchema` filters, scores 1–5, merges duplicates and
-translates → HTML message (≤ 4096 chars) → Bot API `sendMessage`. Errors go to
+call with a JSON `responseSchema` filters, scores 1–5, merges duplicates, tags
+each story with topic keys from `topics.catalog` and translates; headlines of
+the last `dedup.story_memory_hours` go along, and stories the model marks as
+already told (or with a near-identical headline) are dropped → HTML message (≤ 4096 chars) → Bot API `sendMessage`. Errors go to
 your private chat with the bot.
 
 ## Setup
@@ -50,7 +53,14 @@ daily-rotated files in `paths.log_dir` (14 kept). `RUST_LOG=debug` for more.
 Everything is in `config.yaml`, no rebuild needed (`serve` re-reads it before
 each run):
 
-- `topics.keep` / `topics.drop` — plain-language rules for Gemini.
+- `digest.language` — `uk` or `ru`: the language the model writes in, plus
+  month names and Ранок/Вечір in the title.
+- `topics.catalog` — the topics we cover: `key` (stable id; the bot will use it
+  for personal topic choice), `title` shown to readers, `description` for the
+  model, `tag` the hashtag shown before each headline. Each story gets 1–3
+  keys. `topics.drop` — what to throw away.
+- The `bonus` section closes the digest with 1–2 pleasant stories (topic
+  `good`); its description in `digest.sections` tells the model the rules.
 - `sources` — `kind: rss` (list of `urls`), `kind: sitemap` (`url` +
   `sections`, the first path segment of article URLs, e.g. `oviedo`),
   `kind: spanified`. Order matters: on duplicates the earlier source wins.

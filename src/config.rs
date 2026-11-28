@@ -93,6 +93,14 @@ pub struct DedupConfig {
     pub title_similarity: f64,
     /// Sent URLs older than this are deleted from SQLite.
     pub retention_days: i64,
+    /// Headlines published in the last N hours are shown to the model, which
+    /// must not retell those stories unless there is real news in them.
+    #[serde(default = "default_story_memory_hours")]
+    pub story_memory_hours: i64,
+}
+
+fn default_story_memory_hours() -> i64 {
+    48
 }
 
 #[derive(Debug, Clone, Deserialize)]
@@ -111,7 +119,10 @@ pub struct GeminiConfig {
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct DigestConfig {
-    /// Heading; `{date}` is replaced with e.g. "21 ноября".
+    /// Language the model writes in and the date/period words are rendered in.
+    pub language: Lang,
+    /// Heading; `{date}` is replaced with e.g. "21 листопада", `{period}` with
+    /// the morning/evening word.
     pub title: String,
     /// Blocks of the message, in display order. The model puts every story
     /// into one of them by `key`.
@@ -157,11 +168,46 @@ impl DigestConfig {
     }
 }
 
+/// Output language of the digest.
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize)]
+#[serde(rename_all = "lowercase")]
+pub enum Lang {
+    Uk,
+    Ru,
+}
+
+impl Lang {
+    /// Name of the language for the prompt ("write in …").
+    pub fn prompt_name(self) -> &'static str {
+        match self {
+            Lang::Uk => "Ukrainian",
+            Lang::Ru => "Russian",
+        }
+    }
+}
+
 #[derive(Debug, Clone, Deserialize)]
 #[serde(deny_unknown_fields)]
 pub struct TopicsConfig {
-    pub keep: Vec<String>,
+    /// The topics we cover. The model tags every story with 1–3 of their keys;
+    /// later the bot lets readers pick from the same list.
+    pub catalog: Vec<TopicConfig>,
+    /// Plain-language rules for what to throw away.
     pub drop: Vec<String>,
+}
+
+#[derive(Debug, Clone, Deserialize)]
+#[serde(deny_unknown_fields)]
+pub struct TopicConfig {
+    /// Stable id the model answers with, e.g. `housing`.
+    pub key: String,
+    /// Name shown to readers, e.g. "🏠 Житло".
+    pub title: String,
+    /// Telegram hashtag without `#`, shown before each headline, e.g. `житло`.
+    /// Letters, digits and `_` only (anything else ends a Telegram hashtag).
+    pub tag: String,
+    /// For the model: what belongs to this topic.
+    pub description: String,
 }
 
 /// One entry under `sources:`. `kind` picks the parser.
@@ -223,6 +269,22 @@ impl Config {
                 bail!("digest.sections: duplicate key {:?}", sec.key);
             }
         }
+        if cfg.topics.catalog.is_empty() {
+            bail!("topics.catalog must list at least one topic");
+        }
+        let mut keys = std::collections::HashSet::new();
+        for t in &cfg.topics.catalog {
+            if !keys.insert(t.key.as_str()) {
+                bail!("topics.catalog: duplicate key {:?}", t.key);
+            }
+            if t.tag.is_empty() || !t.tag.chars().all(|c| c.is_alphanumeric() || c == '_') {
+                bail!(
+                    "topics.catalog {:?}: tag {:?} must be letters, digits or _ only",
+                    t.key,
+                    t.tag
+                );
+            }
+        }
         if cfg.sources.is_empty() {
             bail!("no sources configured");
         }
@@ -277,5 +339,7 @@ mod tests {
         let cfg = Config::parse(include_str!("../config.yaml")).expect("config.yaml is valid");
         assert_eq!(cfg.schedule.tz().unwrap(), chrono_tz::Europe::Madrid);
         assert!(cfg.sources.len() >= 5);
+        assert_eq!(cfg.digest.language, Lang::Uk);
+        assert!(cfg.topics.catalog.len() >= 10);
     }
 }

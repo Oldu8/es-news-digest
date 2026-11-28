@@ -50,7 +50,14 @@ impl Store {
                  title   TEXT NOT NULL,      -- original title, for fuzzy matching
                  sent_at INTEGER NOT NULL    -- unix seconds
              );
-             CREATE INDEX IF NOT EXISTS sent_at_idx ON sent(sent_at);",
+             CREATE INDEX IF NOT EXISTS sent_at_idx ON sent(sent_at);
+             -- headlines of published digest items (in the digest language),
+             -- shown to the model so it does not retell the same story
+             CREATE TABLE IF NOT EXISTS stories (
+                 title   TEXT NOT NULL,
+                 sent_at INTEGER NOT NULL    -- unix seconds
+             );
+             CREATE INDEX IF NOT EXISTS stories_at_idx ON stories(sent_at);",
         )?;
         Ok(Self { conn })
     }
@@ -93,12 +100,53 @@ impl Store {
         Ok(n)
     }
 
+    /// Remember the headlines of the items just published.
+    pub fn mark_stories<'a>(
+        &mut self,
+        titles: impl IntoIterator<Item = &'a str>,
+        at: DateTime<Utc>,
+    ) -> Result<usize> {
+        let tx = self.conn.transaction()?;
+        let mut n = 0;
+        {
+            let mut stmt = tx.prepare("INSERT INTO stories (title, sent_at) VALUES (?1, ?2)")?;
+            for t in titles {
+                n += stmt.execute(params![t, at.timestamp()])?;
+            }
+        }
+        tx.commit()?;
+        Ok(n)
+    }
+
+    /// Headlines published since `since`, oldest first.
+    /// An old database opened read-only (`--dry-run`) may not have the table
+    /// yet: then there is nothing to show.
+    pub fn stories_since(&self, since: DateTime<Utc>) -> Result<Vec<String>> {
+        let exists: bool = self.conn.query_row(
+            "SELECT EXISTS (SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'stories')",
+            [],
+            |r| r.get(0),
+        )?;
+        if !exists {
+            return Ok(Vec::new());
+        }
+        let mut stmt = self
+            .conn
+            .prepare("SELECT title FROM stories WHERE sent_at >= ?1 ORDER BY sent_at, rowid")?;
+        let rows = stmt.query_map(params![since.timestamp()], |r| r.get(0))?;
+        Ok(rows.collect::<rusqlite::Result<_>>()?)
+    }
+
     /// Forget entries older than `days`. Returns how many rows were deleted.
     pub fn prune(&self, now: DateTime<Utc>, days: i64) -> Result<usize> {
         let cutoff = (now - Duration::days(days)).timestamp();
-        Ok(self
+        let sent = self
             .conn
-            .execute("DELETE FROM sent WHERE sent_at < ?1", params![cutoff])?)
+            .execute("DELETE FROM sent WHERE sent_at < ?1", params![cutoff])?;
+        let stories = self
+            .conn
+            .execute("DELETE FROM stories WHERE sent_at < ?1", params![cutoff])?;
+        Ok(sent + stories)
     }
 }
 
@@ -132,7 +180,15 @@ mod tests {
             0.8
         ));
 
-        assert_eq!(s.prune(now, 30).unwrap(), 1);
+        s.mark_stories(["Стара історія"], now - Duration::days(40))
+            .unwrap();
+        s.mark_stories(["Інфляція 4,1%", "Вибори"], now).unwrap();
+        assert_eq!(
+            s.stories_since(now - Duration::hours(48)).unwrap(),
+            ["Інфляція 4,1%", "Вибори"]
+        );
+
+        assert_eq!(s.prune(now, 30).unwrap(), 2);
         let sent = s.recent().unwrap();
         assert_eq!(sent.len(), 1);
         assert_eq!(sent[0].url, "x.es/b");
